@@ -4,7 +4,6 @@ project(ThreadPool)
 set(CMAKE_CXX_STANDARD 23)
 
 add_executable(ThreadPool main.cpp
-        ThreadPool.cpp
         ThreadPool.h
         Utility.h
         TaskQueue.h)

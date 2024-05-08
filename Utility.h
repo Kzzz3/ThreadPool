@@ -9,9 +9,9 @@ namespace KTP
 {
 
 // type trait
-struct Normal   {};  // normal task (for type inference)
-struct Urgent   {};  // urgent task (for type inference)
-struct Sequence {};  // sequence tasks (for type inference)
+struct Normal   {};  // normal task
+struct Urgent   {};  // urgent task
+struct Sequence {};  // sequence tasks
 
 } // KTP
 
