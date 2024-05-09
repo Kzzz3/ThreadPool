@@ -16,7 +16,7 @@ class TaskQueue
 {
   using size_type = typename std::deque<T>::size_type;
 
-public:
+ public:
   TaskQueue() = default;
   TaskQueue(TaskQueue &&) = default;
   TaskQueue(const TaskQueue &) = delete;
@@ -28,7 +28,7 @@ public:
   void PushFront(T &);
   void PushFront(T &&);
 
-private:
+ private:
   std::mutex lock_;
   std::deque<T> queue_;
 };
@@ -39,9 +39,9 @@ bool TaskQueue<T>::Pop(T &tmp)
   std::lock_guard<std::mutex> lock(lock_);
   if (!queue_.empty())
   {
-	tmp = std::move(queue_.front());
-	queue_.pop_front();
-	return true;
+    tmp = std::move(queue_.front());
+    queue_.pop_front();
+    return true;
   }
   return false;
 }

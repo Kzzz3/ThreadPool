@@ -3,7 +3,11 @@
 int main()
 {
   KTP::ThreadPool pool(4);
-  pool.Submit<KTP::Sequence>([](){return 1;},
+  auto t = pool.Submit<KTP::Sequence>([](){return 1;},
 							 [](){return;});
-  while(true){}
+
+  std::cout << std::get<0>(t).get() << std::endl;
+
+  while (true){}
+    return 0;
 }
