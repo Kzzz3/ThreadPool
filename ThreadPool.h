@@ -39,36 +39,23 @@ class ThreadPool
   void AddThread(int num = 1);
   void DeleteThread(int num = 1);
 
-  // return void type
-  template<typename T, typename F>
-  requires std::is_same_v<T, Normal>
-	  && std::is_void<std::invoke_result_t<F>>::value
-  auto Submit(F &&task);
+  template<typename TF>
+  auto WaitTasksDone(TF &futures);
 
-  template<typename T, typename F>
-  requires std::is_same_v<T, Urgent>
-	  && std::is_void<std::invoke_result_t<F>>::value
-  auto Submit(F &&task);
-
-  template<typename T, typename... Fs>
-  requires std::is_same_v<T, Sequence>
-	  && std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>
-  auto Submit(Fs &&... tasks);
+  template<typename ...Futures>
+  auto WaitTasksDone(Futures &... futures);
 
   // return non-void type
   template<typename T, typename F, typename R = std::invoke_result_t<F>>
   requires std::is_same_v<T, Normal>
-	  && (!std::is_void<std::invoke_result_t<F>>::value)
   auto Submit(F &&task) -> std::future<R>;
 
   template<typename T, typename F, typename R = std::invoke_result_t<F>>
   requires std::is_same_v<T, Urgent>
-	  && (!std::is_void<std::invoke_result_t<F>>::value)
   auto Submit(F &&task) -> std::future<R>;
 
   template<typename T, typename... Fs>
   requires std::is_same_v<T, Sequence>
-	  && (!std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>)
   auto Submit(Fs &&... tasks) -> std::tuple<std::future<std::invoke_result_t<Fs>>...>;
 
  private:
@@ -79,7 +66,7 @@ class ThreadPool
   std::atomic<int> waiting_delete_thread_num_ = 0;
 
   TaskQueue<Task> task_queue_;
-  std::counting_semaphore<LLONG_MAX> task_semaphore_;
+  std::counting_semaphore<LLONG_MAX> task_num_semaphore_;
 
   std::mutex map_lock_;
   std::map<std::jthread::id, std::jthread> thread_map_;
@@ -90,7 +77,7 @@ class ThreadPool
 // Implementation
 /*-------------------------------------------------------------------------------------------------------------------*/
 ThreadPool::ThreadPool(int num)
-	: task_semaphore_(0)
+	: task_num_semaphore_(0)
 {
   AddThread(num);
 }
@@ -99,6 +86,15 @@ ThreadPool::~ThreadPool()
 {
   is_terminated_ = true;
   DeleteThread(GetThreadNum());
+
+  std::lock_guard<std::mutex> lock(map_lock_);
+  for (auto &[id, thread] : thread_map_)
+  {
+	if (thread.joinable())
+	{
+	  thread.join();
+	}
+  }
 }
 
 void ThreadPool::ThreadLoop()
@@ -117,13 +113,9 @@ void ThreadPool::ThreadLoop()
 	  }
 	}
 
-	task_semaphore_.acquire();
-	if (!task_queue_.Size())
-	{
+	task_num_semaphore_.acquire();
+	if (is_terminated_ || !task_queue_.Pop(task))
 	  continue;
-	}
-
-	task_queue_.Pop(task);
 
 	free_thread_num_--;
 	working_thread_num_++;
@@ -155,7 +147,6 @@ void ThreadPool::AddThread(int num)
 	{
 	  std::lock_guard<std::mutex> lock(map_lock_);
 	  thread_map_[tmp_id] = std::move(tmp);
-	  thread_map_[tmp_id].detach();
 	  free_thread_num_++;
 	}
   }
@@ -167,69 +158,81 @@ void ThreadPool::DeleteThread(int num)
   for (int i = 0; i < num; i++)
   {
 	waiting_delete_thread_num_++;
-	task_semaphore_.release();
+	task_num_semaphore_.release();
   }
 }
 
-template<typename T, typename F>
-requires std::is_same_v<T, Normal>
-	&& std::is_void<std::invoke_result_t<F>>::value
-auto ThreadPool::Submit(F &&task)
+template<typename TF>
+auto ThreadPool::WaitTasksDone(TF &futures)
 {
-  task_queue_.PushBack([task]()
-					   { task(); });
-  task_semaphore_.release();
+  return std::apply([&](auto &... futures)
+					{
+					  return std::make_tuple(futures.get()...);
+					}, futures);
 }
 
-template<typename T, typename F>
-requires std::is_same_v<T, Urgent>
-	&& std::is_void<std::invoke_result_t<F>>::value
-auto ThreadPool::Submit(F &&task)
+template<typename ...Futures>
+auto ThreadPool::WaitTasksDone(Futures &... futures)
 {
-  task_queue_.PushFront([task]()
-						{ task(); });
-  task_semaphore_.release();
-}
-
-template<typename T, typename... Fs>
-requires std::is_same_v<T, Sequence>
-	&& std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>
-auto ThreadPool::Submit(Fs &&... tasks)
-{
-  task_queue_.PushBack([tasks...]()
-					   { (std::invoke(tasks), ...); });
-  task_semaphore_.release();
+  return std::make_tuple(std::invoke([&](auto &future)
+									 {
+									   if constexpr (!std::is_void_v<decltype(future.get())>)
+									   {
+										 return future.get();
+									   }
+									   else
+									   {
+										 return nullptr;
+									   }
+									 }, futures)...);
 }
 
 template<typename T, typename F, typename R>
 requires std::is_same_v<T, Normal>
-	&& (!std::is_void<std::invoke_result_t<F>>::value)
 auto ThreadPool::Submit(F &&task) -> std::future<R>
 {
   std::function < R() > task_func(std::forward<F>(task));
   std::shared_ptr<std::promise<R>> task_promise = std::make_shared<std::promise<R>>();
   task_queue_.PushBack([task_func, task_promise]()
-					   { task_promise->set_value(task_func()); });
-  task_semaphore_.release();
+					   {
+						 if constexpr (!std::is_void_v<R>)
+						 {
+						   task_promise->set_value(task_func());
+						 }
+						 else
+						 {
+						   task_func();
+						   task_promise->set_value();
+						 }
+					   });
+  task_num_semaphore_.release();
   return task_promise->get_future();
 }
 
 template<typename T, typename F, typename R>
 requires std::is_same_v<T, Urgent>
-	&& (!std::is_void<std::invoke_result_t<F>>::value)
 auto ThreadPool::Submit(F &&task) -> std::future<R>
 {
   std::function < R() > task_func(std::forward<F>(task));
   std::shared_ptr<std::promise<R>> task_promise = std::make_shared<std::promise<R>>();
   task_queue_.PushFront([task_func, task_promise]()
-						{ task_promise->set_value(task_func()); });
-  task_semaphore_.release();
+						{
+						  if constexpr (!std::is_void_v<R>)
+						  {
+							task_promise->set_value(task_func());
+						  }
+						  else
+						  {
+							task_func();
+							task_promise->set_value();
+						  }
+						});
+  task_num_semaphore_.release();
   return task_promise->get_future();
 }
 
 template<typename T, typename... Fs>
 requires std::is_same_v<T, Sequence>
-	&& (!std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>)
 auto ThreadPool::Submit(Fs &&... tasks) -> std::tuple<std::future<std::invoke_result_t<Fs>>...>
 {
   auto tasks_func = std::make_tuple(std::function < std::invoke_result_t<Fs>() > (std::forward<Fs>(tasks))...);
@@ -261,7 +264,7 @@ auto ThreadPool::Submit(Fs &&... tasks) -> std::tuple<std::future<std::invoke_re
 												 }, tasks_func);
 									}, tasks_promises);
 					   });
-  task_semaphore_.release();
+  task_num_semaphore_.release();
 
   return tasks_futures;
 }
