@@ -69,16 +69,20 @@ class TPScheduler
   std::atomic<int> interval_ = 100;
   std::atomic<bool> is_terminated_ = false;
 
-  std::mutex lock_;
+  std::mutex map_lock_;
   std::map<TPID, ThreadPool *> pools_;
+
+  std::jthread scheduler_thread_;
 };
 
 TPScheduler::TPScheduler()
+	: scheduler_thread_(&TPScheduler::ThreadLoop, this)
 {
 }
 
 TPScheduler::TPScheduler(int min_thread_num, int max_thread_num, int interval)
-	: min_thread_num_(min_thread_num), max_thread_num_(max_thread_num), interval_(interval)
+	: min_thread_num_(min_thread_num), max_thread_num_(max_thread_num), interval_(interval),
+	  scheduler_thread_(&TPScheduler::ThreadLoop, this)
 {
 }
 
@@ -93,7 +97,7 @@ void TPScheduler::ThreadLoop()
   {
 	std::this_thread::sleep_for(std::chrono::milliseconds(interval_));
 
-	std::lock_guard<std::mutex> lock(lock_);
+	std::lock_guard<std::mutex> lock(map_lock_);
 	for (auto &pool : pools_)
 	{
 	  auto task_num = pool.second->GetTaskNum();
@@ -104,12 +108,17 @@ void TPScheduler::ThreadLoop()
 	  if (task_num)
 	  {
 		int nums = std::min(max_thread_num_ - thread_num, task_num - thread_num);
-		pool.second->AddThread(nums);
+		if (nums > 0)
+		{
+		  pool.second->AddThread(nums);
+		}
 
 	  } else if (thread_num > min_thread_num_)
 	  {
 		pool.second->DeleteThread();
 	  }
+
+	  std::cout << "pool " << pool.first << " thread num: " << pool.second->GetThreadNum() << std::endl;
 	}
   }
 }
@@ -133,14 +142,14 @@ TPID TPScheduler::CalDeliveredTPID()
 TPID TPScheduler::Hosting(ThreadPool *pool)
 {
   static TPID next_tpid = 0;
-  std::lock_guard<std::mutex> lock(lock_);
+  std::lock_guard<std::mutex> lock(map_lock_);
   pools_[++next_tpid] = pool;
   return next_tpid;
 }
 
 ThreadPool *TPScheduler::UnHosting(TPID id)
 {
-  std::lock_guard<std::mutex> lock(lock_);
+  std::lock_guard<std::mutex> lock(map_lock_);
   if (pools_.contains(id))
   {
 	auto pool = pools_[id];
@@ -155,7 +164,7 @@ requires std::is_same_v<T, Normal>
 	&& std::is_void<std::invoke_result_t<F>>::value
 auto TPScheduler::Submit(F &&task)
 {
-  std::lock_guard<std::mutex> lock(lock_);
+  std::lock_guard<std::mutex> lock(map_lock_);
   TPID tpid = CalDeliveredTPID();
   pools_[tpid]->Submit<T>(std::forward<F>(task));
 }
@@ -165,7 +174,7 @@ requires std::is_same_v<T, Urgent>
 	&& std::is_void<std::invoke_result_t<F>>::value
 auto TPScheduler::Submit(F &&task)
 {
-  std::lock_guard<std::mutex> lock(lock_);
+  std::lock_guard<std::mutex> lock(map_lock_);
   TPID tpid = CalDeliveredTPID();
   pools_[tpid]->Submit<T>(std::forward<F>(task));
 
@@ -176,7 +185,7 @@ requires std::is_same_v<T, Sequence>
 	&& std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>
 auto TPScheduler::Submit(Fs &&... tasks)
 {
-  std::lock_guard<std::mutex> lock(lock_);
+  std::lock_guard<std::mutex> lock(map_lock_);
   TPID tpid = CalDeliveredTPID();
   pools_[tpid]->Submit<T>(std::forward<Fs>(tasks)...);
 }
@@ -187,7 +196,7 @@ requires std::is_same_v<T, Normal>
 	&& (!std::is_void<std::invoke_result_t<F>>::value)
 auto TPScheduler::Submit(F &&task) -> std::future<R>
 {
-  std::lock_guard<std::mutex> lock(lock_);
+  std::lock_guard<std::mutex> lock(map_lock_);
   TPID tpid = CalDeliveredTPID();
   return pools_[tpid]->Submit<T, F, R>(std::forward<F>(task));
 }
@@ -197,7 +206,7 @@ requires std::is_same_v<T, Urgent>
 	&& (!std::is_void<std::invoke_result_t<F>>::value)
 auto TPScheduler::Submit(F &&task) -> std::future<R>
 {
-  std::lock_guard<std::mutex> lock(lock_);
+  std::lock_guard<std::mutex> lock(map_lock_);
   TPID tpid = CalDeliveredTPID();
   return pools_[tpid]->Submit<T, F, R>(std::forward<F>(task));
 }
@@ -207,7 +216,7 @@ requires std::is_same_v<T, Sequence>
 	&& (!std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>)
 auto TPScheduler::Submit(Fs &&... tasks) -> std::tuple<std::future<std::invoke_result_t<Fs>>...>
 {
-  std::lock_guard<std::mutex> lock(lock_);
+  std::lock_guard<std::mutex> lock(map_lock_);
   TPID tpid = CalDeliveredTPID();
   return pools_[tpid]->Submit<T, Fs...>(std::forward<Fs>(tasks)...);
 }

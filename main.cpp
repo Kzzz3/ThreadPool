@@ -46,6 +46,13 @@ int main()
   std::cout << std::get<1>(r3).get() << std::endl;
   std::cout << std::get<2>(r3).get() << std::endl;
 
+  for(int i = 0; i < 10000000; ++i)
+  {
+	scheduler.Submit<KTP::Normal>([]
+								  { std::this_thread::sleep_for(std::chrono::milliseconds (100)); });
+  }
+
+
   while (true)
   {
 	std::this_thread::sleep_for(std::chrono::seconds(1));
