@@ -251,7 +251,8 @@ auto ThreadPool::Submit(Fs &&... tasks) -> std::tuple<std::future<std::invoke_re
 																  if constexpr (!std::is_void_v<ReturnT>)
 																  {
 																	promise->set_value(task());
-																  } else
+																  }
+																  else
 																  {
 																	task();
 																	promise->set_value();

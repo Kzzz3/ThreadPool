@@ -26,7 +26,7 @@ class TPScheduler
 
   void ThreadLoop();
 
-  TPID CalDeliveredTPID();
+  TPID CalNextDeliveredTPID();
 
   TPID Hosting(ThreadPool *pool);
   ThreadPool *UnHosting(TPID id);
@@ -67,6 +67,7 @@ class TPScheduler
   int min_thread_num_ = 1;
   int max_thread_num_ = 10;
   std::atomic<int> interval_ = 100;
+  std::atomic<TPID> next_tpid_ = 0;
   std::atomic<bool> is_terminated_ = false;
 
   std::mutex map_lock_;
@@ -97,6 +98,7 @@ void TPScheduler::ThreadLoop()
   {
 	std::this_thread::sleep_for(std::chrono::milliseconds(interval_));
 
+	// thread pool management
 	std::lock_guard<std::mutex> lock(map_lock_);
 	for (auto &pool : pools_)
 	{
@@ -112,18 +114,19 @@ void TPScheduler::ThreadLoop()
 		{
 		  pool.second->AddThread(nums);
 		}
-
-	  } else if (thread_num > min_thread_num_)
+	  }
+	  else if (thread_num > min_thread_num_)
 	  {
 		pool.second->DeleteThread();
 	  }
 
-	  std::cout << "pool " << pool.first << " thread num: " << pool.second->GetThreadNum() << std::endl;
+	  //Calculate next delivered TPID
+	  next_tpid_ = CalNextDeliveredTPID();
 	}
   }
 }
 
-TPID TPScheduler::CalDeliveredTPID()
+TPID TPScheduler::CalNextDeliveredTPID()
 {
   TPID least_task_tpid = 0;
   int min_task_num = INT_MAX;
@@ -165,8 +168,13 @@ requires std::is_same_v<T, Normal>
 auto TPScheduler::Submit(F &&task)
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  TPID tpid = CalDeliveredTPID();
-  pools_[tpid]->Submit<T>(std::forward<F>(task));
+  if (!pools_.contains(next_tpid_))
+  {
+	next_tpid_ = CalNextDeliveredTPID();
+  }
+
+  assert(pools_.contains(next_tpid_));
+  pools_[next_tpid_]->Submit<T>(std::forward<F>(task));
 }
 
 template<typename T, typename F>
@@ -175,8 +183,13 @@ requires std::is_same_v<T, Urgent>
 auto TPScheduler::Submit(F &&task)
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  TPID tpid = CalDeliveredTPID();
-  pools_[tpid]->Submit<T>(std::forward<F>(task));
+  if (!pools_.contains(next_tpid_))
+  {
+	next_tpid_ = CalNextDeliveredTPID();
+  }
+
+  assert(pools_.contains(next_tpid_));
+  pools_[next_tpid_]->Submit<T>(std::forward<F>(task));
 
 }
 
@@ -186,8 +199,13 @@ requires std::is_same_v<T, Sequence>
 auto TPScheduler::Submit(Fs &&... tasks)
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  TPID tpid = CalDeliveredTPID();
-  pools_[tpid]->Submit<T>(std::forward<Fs>(tasks)...);
+  if (!pools_.contains(next_tpid_))
+  {
+	next_tpid_ = CalNextDeliveredTPID();
+  }
+
+  assert(pools_.contains(next_tpid_));
+  pools_[next_tpid_]->Submit<T>(std::forward<Fs>(tasks)...);
 }
 
 // return non-void type
@@ -197,8 +215,13 @@ requires std::is_same_v<T, Normal>
 auto TPScheduler::Submit(F &&task) -> std::future<R>
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  TPID tpid = CalDeliveredTPID();
-  return pools_[tpid]->Submit<T, F, R>(std::forward<F>(task));
+  if (!pools_.contains(next_tpid_))
+  {
+	next_tpid_ = CalNextDeliveredTPID();
+  }
+
+  assert(pools_.contains(next_tpid_));
+  return pools_[next_tpid_]->Submit<T, F, R>(std::forward<F>(task));
 }
 
 template<typename T, typename F, typename R>
@@ -207,8 +230,13 @@ requires std::is_same_v<T, Urgent>
 auto TPScheduler::Submit(F &&task) -> std::future<R>
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  TPID tpid = CalDeliveredTPID();
-  return pools_[tpid]->Submit<T, F, R>(std::forward<F>(task));
+  if (!pools_.contains(next_tpid_))
+  {
+	next_tpid_ = CalNextDeliveredTPID();
+  }
+
+  assert(pools_.contains(next_tpid_));
+  return pools_[next_tpid_]->Submit<T, F, R>(std::forward<F>(task));
 }
 
 template<typename T, typename... Fs>
@@ -217,8 +245,13 @@ requires std::is_same_v<T, Sequence>
 auto TPScheduler::Submit(Fs &&... tasks) -> std::tuple<std::future<std::invoke_result_t<Fs>>...>
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  TPID tpid = CalDeliveredTPID();
-  return pools_[tpid]->Submit<T, Fs...>(std::forward<Fs>(tasks)...);
+  if (!pools_.contains(next_tpid_))
+  {
+	next_tpid_ = CalNextDeliveredTPID();
+  }
+
+  assert(pools_.contains(next_tpid_));
+  return pools_[next_tpid_]->Submit<T, Fs...>(std::forward<Fs>(tasks)...);
 }
 
 }

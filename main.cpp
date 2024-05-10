@@ -1,57 +1,34 @@
+#include <chrono>
 #include <iostream>
 #include "TPScheduler.h"
 int main()
 {
-  KTP::TPScheduler scheduler;
-  KTP::ThreadPool pool1(1);
-  KTP::ThreadPool pool2(2);
-  KTP::ThreadPool pool3(3);
+  KTP::TPScheduler scheduler(1, 100, 100);
+  KTP::ThreadPool pool1(10);
   scheduler.Hosting(&pool1);
-  scheduler.Hosting(&pool2);
-  scheduler.Hosting(&pool3);
+//for(int i=0;i<10;i++)
+//{
+//  KTP::ThreadPool *pool = new KTP::ThreadPool(10);
+//  scheduler.Hosting(pool);
+//}
 
-  scheduler.Submit<KTP::Normal>([]
-								{ std::cout << "Normal task 1\n"; });
-  scheduler.Submit<KTP::Normal>([]
-								{ std::cout << "Normal task 2\n"; });
 
-  scheduler.Submit<KTP::Urgent>([]
-								{ std::cout << "Urgent task 1\n"; });
-  scheduler.Submit<KTP::Urgent>([]
-								{ std::cout << "Urgent task 2\n"; });
+  auto start = std::chrono::high_resolution_clock::now();
 
-  scheduler.Submit<KTP::Sequence>([]
-								  { std::cout << "Sequence task 1\n"; },
-								  []
-								  { std::cout << "Sequence task 2\n"; },
-								  []
-								  { std::cout << "Sequence task 3\n"; });
-
-  auto r1 = scheduler.Submit<KTP::Normal>([]
-										  { return 1; });
-
-  auto r2 = scheduler.Submit<KTP::Urgent>([]
-										  { return 2; });
-
-  auto r3 = scheduler.Submit<KTP::Sequence>([]
-											{ return 3; },
-											[]
-											{ return 4; },
-											[]
-											{ return 5; });
-
-  std::cout << r1.get() << std::endl;
-  std::cout << r2.get() << std::endl;
-  std::cout << std::get<0>(r3).get() << std::endl;
-  std::cout << std::get<1>(r3).get() << std::endl;
-  std::cout << std::get<2>(r3).get() << std::endl;
-
-  for(int i = 0; i < 10000000; ++i)
+  std::vector<std::future<int>> futures;
+  for(int i=0;i<10000;i++)
   {
-	scheduler.Submit<KTP::Normal>([]
-								  { std::this_thread::sleep_for(std::chrono::milliseconds (100)); });
+	futures.push_back(scheduler.Submit<KTP::Normal>([](){std::this_thread::sleep_for(std::chrono::microseconds (1));return 1;}));
   }
 
+  for(auto &f : futures)
+  {
+	f.get();
+  }
+
+  auto end = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+  std::cout << "Function execution time: " << duration.count() << " microseconds" << std::endl;
 
   while (true)
   {
