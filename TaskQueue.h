@@ -39,9 +39,9 @@ bool TaskQueue<T>::Pop(T &tmp)
   std::lock_guard<std::mutex> lock(lock_);
   if (!queue_.empty())
   {
-    tmp = std::move(queue_.front());
-    queue_.pop_front();
-    return true;
+	tmp = std::move(queue_.front());
+	queue_.pop_front();
+	return true;
   }
   return false;
 }
