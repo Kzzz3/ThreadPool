@@ -40,10 +40,10 @@ class ThreadPool
   void DeleteThread(int num = 1);
 
   template<typename TF>
-  auto WaitTasksDone(TF &futures);
+  static auto WaitTasksDone(TF &futures);
 
   template<typename ...Futures>
-  auto WaitTasksDone(Futures &... futures);
+  static auto WaitTasksDone(Futures &... futures);
 
   // return non-void type
   template<typename T, typename F, typename R = std::invoke_result_t<F>>

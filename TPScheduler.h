@@ -31,44 +31,31 @@ class TPScheduler
   TPID Hosting(ThreadPool *pool);
   ThreadPool *UnHosting(TPID id);
 
-  // return void type
-  template<typename T, typename F>
-  requires std::is_same_v<T, Normal>
-	  && std::is_void<std::invoke_result_t<F>>::value
-  auto Submit(F &&task);
+  template<typename TF>
+  static auto WaitTasksDone(TF &futures);
 
-  template<typename T, typename F>
-  requires std::is_same_v<T, Urgent>
-	  && std::is_void<std::invoke_result_t<F>>::value
-  auto Submit(F &&task);
-
-  template<typename T, typename... Fs>
-  requires std::is_same_v<T, Sequence>
-	  && std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>
-  auto Submit(Fs &&... tasks);
+  template<typename ...Futures>
+  static auto WaitTasksDone(Futures &... futures);
 
   // return non-void type
   template<typename T, typename F, typename R = std::invoke_result_t<F>>
   requires std::is_same_v<T, Normal>
-	  && (!std::is_void<std::invoke_result_t<F>>::value)
   auto Submit(F &&task) -> std::future<R>;
 
   template<typename T, typename F, typename R = std::invoke_result_t<F>>
   requires std::is_same_v<T, Urgent>
-	  && (!std::is_void<std::invoke_result_t<F>>::value)
   auto Submit(F &&task) -> std::future<R>;
 
   template<typename T, typename... Fs>
   requires std::is_same_v<T, Sequence>
-	  && (!std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>)
   auto Submit(Fs &&... tasks) -> std::tuple<std::future<std::invoke_result_t<Fs>>...>;
 
  private:
   int min_thread_num_ = 1;
   int max_thread_num_ = 10;
   std::atomic<int> interval_ = 100;
-  std::atomic<TPID> next_tpid_ = 0;
   std::atomic<bool> is_terminated_ = false;
+  std::atomic<TPID> next_delivered_tpid_ = 0;
 
   std::mutex map_lock_;
   std::map<TPID, ThreadPool *> pools_;
@@ -90,6 +77,11 @@ TPScheduler::TPScheduler(int min_thread_num, int max_thread_num, int interval)
 TPScheduler::~TPScheduler()
 {
   is_terminated_ = true;
+
+  if (scheduler_thread_.joinable())
+  {
+	scheduler_thread_.join();
+  }
 }
 
 void TPScheduler::ThreadLoop()
@@ -100,6 +92,7 @@ void TPScheduler::ThreadLoop()
 
 	// thread pool management
 	std::lock_guard<std::mutex> lock(map_lock_);
+
 	for (auto &pool : pools_)
 	{
 	  auto task_num = pool.second->GetTaskNum();
@@ -121,7 +114,7 @@ void TPScheduler::ThreadLoop()
 	  }
 
 	  //Calculate next delivered TPID
-	  next_tpid_ = CalNextDeliveredTPID();
+	  next_delivered_tpid_ = CalNextDeliveredTPID();
 	}
   }
 }
@@ -147,6 +140,7 @@ TPID TPScheduler::Hosting(ThreadPool *pool)
   static TPID next_tpid = 0;
   std::lock_guard<std::mutex> lock(map_lock_);
   pools_[++next_tpid] = pool;
+  next_delivered_tpid_ = CalNextDeliveredTPID();
   return next_tpid;
 }
 
@@ -157,101 +151,66 @@ ThreadPool *TPScheduler::UnHosting(TPID id)
   {
 	auto pool = pools_[id];
 	pools_.erase(id);
+	next_delivered_tpid_ = CalNextDeliveredTPID();
 	return pool;
   }
   return nullptr;
 }
 
-template<typename T, typename F>
-requires std::is_same_v<T, Normal>
-	&& std::is_void<std::invoke_result_t<F>>::value
-auto TPScheduler::Submit(F &&task)
+template<typename TF>
+auto TPScheduler::WaitTasksDone(TF &futures)
 {
-  std::lock_guard<std::mutex> lock(map_lock_);
-  if (!pools_.contains(next_tpid_))
-  {
-	next_tpid_ = CalNextDeliveredTPID();
-  }
-
-  assert(pools_.contains(next_tpid_));
-  pools_[next_tpid_]->Submit<T>(std::forward<F>(task));
+  return std::apply([&](auto &... futures)
+					{
+					  return std::make_tuple(futures.get()...);
+					}, futures);
 }
 
-template<typename T, typename F>
-requires std::is_same_v<T, Urgent>
-	&& std::is_void<std::invoke_result_t<F>>::value
-auto TPScheduler::Submit(F &&task)
+template<typename ...Futures>
+auto TPScheduler::WaitTasksDone(Futures &... futures)
 {
-  std::lock_guard<std::mutex> lock(map_lock_);
-  if (!pools_.contains(next_tpid_))
-  {
-	next_tpid_ = CalNextDeliveredTPID();
-  }
-
-  assert(pools_.contains(next_tpid_));
-  pools_[next_tpid_]->Submit<T>(std::forward<F>(task));
-
-}
-
-template<typename T, typename... Fs>
-requires std::is_same_v<T, Sequence>
-	&& std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>
-auto TPScheduler::Submit(Fs &&... tasks)
-{
-  std::lock_guard<std::mutex> lock(map_lock_);
-  if (!pools_.contains(next_tpid_))
-  {
-	next_tpid_ = CalNextDeliveredTPID();
-  }
-
-  assert(pools_.contains(next_tpid_));
-  pools_[next_tpid_]->Submit<T>(std::forward<Fs>(tasks)...);
+  return std::make_tuple(std::invoke([&](auto &future)
+									 {
+									   if constexpr (!std::is_void_v<decltype(future.get())>)
+									   {
+										 return future.get();
+									   }
+									   else
+									   {
+										 return nullptr;
+									   }
+									 }, futures)...);
 }
 
 // return non-void type
 template<typename T, typename F, typename R>
 requires std::is_same_v<T, Normal>
-	&& (!std::is_void<std::invoke_result_t<F>>::value)
 auto TPScheduler::Submit(F &&task) -> std::future<R>
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  if (!pools_.contains(next_tpid_))
-  {
-	next_tpid_ = CalNextDeliveredTPID();
-  }
 
-  assert(pools_.contains(next_tpid_));
-  return pools_[next_tpid_]->Submit<T, F, R>(std::forward<F>(task));
+  assert(pools_.contains(next_delivered_tpid_));
+  return pools_[next_delivered_tpid_]->Submit<T, F, R>(std::forward<F>(task));
 }
 
 template<typename T, typename F, typename R>
 requires std::is_same_v<T, Urgent>
-	&& (!std::is_void<std::invoke_result_t<F>>::value)
 auto TPScheduler::Submit(F &&task) -> std::future<R>
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  if (!pools_.contains(next_tpid_))
-  {
-	next_tpid_ = CalNextDeliveredTPID();
-  }
 
-  assert(pools_.contains(next_tpid_));
-  return pools_[next_tpid_]->Submit<T, F, R>(std::forward<F>(task));
+  assert(pools_.contains(next_delivered_tpid_));
+  return pools_[next_delivered_tpid_]->Submit<T, F, R>(std::forward<F>(task));
 }
 
 template<typename T, typename... Fs>
 requires std::is_same_v<T, Sequence>
-	&& (!std::conjunction_v<std::is_void<std::invoke_result_t<Fs>>...>)
 auto TPScheduler::Submit(Fs &&... tasks) -> std::tuple<std::future<std::invoke_result_t<Fs>>...>
 {
   std::lock_guard<std::mutex> lock(map_lock_);
-  if (!pools_.contains(next_tpid_))
-  {
-	next_tpid_ = CalNextDeliveredTPID();
-  }
 
-  assert(pools_.contains(next_tpid_));
-  return pools_[next_tpid_]->Submit<T, Fs...>(std::forward<Fs>(tasks)...);
+  assert(pools_.contains(next_delivered_tpid_));
+  return pools_[next_delivered_tpid_]->Submit<T, Fs...>(std::forward<Fs>(tasks)...);
 }
 
 }
